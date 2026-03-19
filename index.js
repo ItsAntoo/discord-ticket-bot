@@ -16,20 +16,44 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
-  EmbedBuilder
+  EmbedBuilder,
 } = require('discord.js');
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds]
+  intents: [GatewayIntentBits.Guilds],
 });
 
+/* =========================
+   BASIC CONFIG CHECK
+========================= */
+const requiredEnv = [
+  'TOKEN',
+  'CLIENT_ID',
+  'GUILD_ID',
+  'OWNER_ROLE_ID',
+  'JURASSIC_CATEGORY_ID',
+  'POKEMON_CATEGORY_ID',
+  'SUPPORT_CATEGORY_ID',
+];
+
+for (const key of requiredEnv) {
+  if (!process.env[key]) {
+    console.error(`Missing environment variable: ${key}`);
+  }
+}
+
+/* =========================
+   SLASH COMMANDS
+========================= */
 const commands = [
   new SlashCommandBuilder()
     .setName('panel')
-    .setDescription('Send the ticket panel')
-    .toJSON()
-];
+    .setDescription('Send the ticket panel'),
+].map(cmd => cmd.toJSON());
 
+/* =========================
+   HELPERS
+========================= */
 function sanitizeUsername(username) {
   return username
     .toLowerCase()
@@ -38,13 +62,13 @@ function sanitizeUsername(username) {
 }
 
 function getTicketChannelName(type, username) {
-  const safeName = sanitizeUsername(username);
+  const safe = sanitizeUsername(username);
 
-  if (type === 'jwtg') return `jwtg-${safeName}`;
-  if (type === 'pogo') return `pogo-${safeName}`;
-  if (type === 'support') return `support-${safeName}`;
+  if (type === 'jwtg') return `jwtg-${safe}`;
+  if (type === 'pogo') return `pogo-${safe}`;
+  if (type === 'support') return `support-${safe}`;
 
-  return `ticket-${safeName}`;
+  return `ticket-${safe}`;
 }
 
 function getCategoryId(type) {
@@ -54,20 +78,172 @@ function getCategoryId(type) {
   return null;
 }
 
-function getTicketLabel(type) {
-  if (type === 'jwtg') return 'Jurassic World The Game';
-  if (type === 'pogo') return 'Pokémon Go';
-  if (type === 'support') return 'Support / Questions';
-  return 'Unknown';
+function buildTicketPanelEmbed() {
+  return new EmbedBuilder()
+    .setColor(0x57F287)
+    .setTitle('Ticket')
+    .setDescription('Use the button below to create a ticket.');
+}
+
+function buildCreateTicketRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('create_ticket')
+      .setLabel('Create ticket')
+      .setEmoji('📩')
+      .setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function buildTypeSelectRow() {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId('ticket_type_select')
+      .setPlaceholder('Select ticket type')
+      .addOptions([
+        {
+          label: 'Buy',
+          description: 'Open a purchase ticket',
+          value: 'buy',
+          emoji: '🛒',
+        },
+        {
+          label: 'Support / Questions',
+          description: 'Open a support ticket',
+          value: 'support',
+          emoji: '❓',
+        },
+      ])
+  );
+}
+
+function buildBuyGameRow() {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId('buy_game_select')
+      .setPlaceholder('Select the game/service you want')
+      .addOptions([
+        {
+          label: 'Jurassic World The Game',
+          description: 'Open a Jurassic World The Game order ticket',
+          value: 'jwtg',
+          emoji: '🦖',
+        },
+        {
+          label: 'Pokémon Go',
+          description: 'Open a Pokémon Go order ticket',
+          value: 'pogo',
+          emoji: '⚡',
+        },
+      ])
+  );
 }
 
 function buildCloseRow() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId('close_ticket')
-      .setLabel('🔒 Close ticket')
+      .setLabel('Close ticket')
+      .setEmoji('🔒')
       .setStyle(ButtonStyle.Danger)
   );
+}
+
+function buildJwtgModal() {
+  const modal = new ModalBuilder()
+    .setCustomId('modal_jwtg')
+    .setTitle('Jurassic World The Game Order');
+
+  const itemInput = new TextInputBuilder()
+    .setCustomId('buy_item')
+    .setLabel('What do you want to buy?')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMaxLength(100);
+
+  const descriptionInput = new TextInputBuilder()
+    .setCustomId('order_description')
+    .setLabel('Order description')
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(true)
+    .setMaxLength(1000);
+
+  const contactInput = new TextInputBuilder()
+    .setCustomId('contact_info')
+    .setLabel('Username / contact info')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMaxLength(100);
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(itemInput),
+    new ActionRowBuilder().addComponents(descriptionInput),
+    new ActionRowBuilder().addComponents(contactInput)
+  );
+
+  return modal;
+}
+
+function buildPogoModal() {
+  const modal = new ModalBuilder()
+    .setCustomId('modal_pogo')
+    .setTitle('Pokémon Go Order');
+
+  const itemInput = new TextInputBuilder()
+    .setCustomId('buy_item')
+    .setLabel('What do you want to buy?')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMaxLength(100);
+
+  const descriptionInput = new TextInputBuilder()
+    .setCustomId('order_description')
+    .setLabel('Order description')
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(true)
+    .setMaxLength(1000);
+
+  const contactInput = new TextInputBuilder()
+    .setCustomId('contact_info')
+    .setLabel('Trainer name / contact info')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMaxLength(100);
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(itemInput),
+    new ActionRowBuilder().addComponents(descriptionInput),
+    new ActionRowBuilder().addComponents(contactInput)
+  );
+
+  return modal;
+}
+
+function buildSupportModal() {
+  const modal = new ModalBuilder()
+    .setCustomId('modal_support')
+    .setTitle('Support / Questions');
+
+  const subjectInput = new TextInputBuilder()
+    .setCustomId('support_subject')
+    .setLabel('Subject')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMaxLength(100);
+
+  const descriptionInput = new TextInputBuilder()
+    .setCustomId('support_description')
+    .setLabel('Explain your issue or question')
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(true)
+    .setMaxLength(1000);
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(subjectInput),
+    new ActionRowBuilder().addComponents(descriptionInput)
+  );
+
+  return modal;
 }
 
 async function findExistingTicket(guild, channelName) {
@@ -76,29 +252,32 @@ async function findExistingTicket(guild, channelName) {
   );
 }
 
-async function createTicketChannel({
-  interaction,
-  type,
-  embed
-}) {
+async function createTicketChannel({ interaction, type, embed }) {
   const guild = interaction.guild;
   const user = interaction.user;
-  const channelName = getTicketChannelName(type, user.username);
   const categoryId = getCategoryId(type);
+
+  if (!guild) {
+    return interaction.reply({
+      content: 'This command can only be used inside a server.',
+      ephemeral: true,
+    });
+  }
 
   if (!categoryId) {
     return interaction.reply({
       content: 'Ticket category not configured correctly.',
-      ephemeral: true
+      ephemeral: true,
     });
   }
 
+  const channelName = getTicketChannelName(type, user.username);
   const existingTicket = await findExistingTicket(guild, channelName);
 
   if (existingTicket) {
     return interaction.reply({
       content: `You already have an open ticket: ${existingTicket}`,
-      ephemeral: true
+      ephemeral: true,
     });
   }
 
@@ -109,15 +288,15 @@ async function createTicketChannel({
     permissionOverwrites: [
       {
         id: guild.roles.everyone.id,
-        deny: [PermissionsBitField.Flags.ViewChannel]
+        deny: [PermissionsBitField.Flags.ViewChannel],
       },
       {
         id: user.id,
         allow: [
           PermissionsBitField.Flags.ViewChannel,
           PermissionsBitField.Flags.SendMessages,
-          PermissionsBitField.Flags.ReadMessageHistory
-        ]
+          PermissionsBitField.Flags.ReadMessageHistory,
+        ],
       },
       {
         id: process.env.OWNER_ROLE_ID,
@@ -125,24 +304,31 @@ async function createTicketChannel({
           PermissionsBitField.Flags.ViewChannel,
           PermissionsBitField.Flags.SendMessages,
           PermissionsBitField.Flags.ReadMessageHistory,
-          PermissionsBitField.Flags.ManageChannels
-        ]
-      }
-    ]
+          PermissionsBitField.Flags.ManageChannels,
+        ],
+      },
+    ],
   });
 
   await channel.send({
     content: `<@&${process.env.OWNER_ROLE_ID}> ${user}`,
     embeds: [embed],
-    components: [buildCloseRow()]
+    components: [buildCloseRow()],
+    allowedMentions: {
+      roles: [process.env.OWNER_ROLE_ID],
+      users: [user.id],
+    },
   });
 
   return interaction.reply({
     content: `Your ticket has been created: ${channel}`,
-    ephemeral: true
+    ephemeral: true,
   });
 }
 
+/* =========================
+   READY EVENT
+========================= */
 client.once(Events.ClientReady, async () => {
   console.log(`Bot online as ${client.user.tag}`);
 
@@ -150,132 +336,73 @@ client.once(Events.ClientReady, async () => {
     const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
 
     await rest.put(
-      Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
+      Routes.applicationGuildCommands(
+        process.env.CLIENT_ID,
+        process.env.GUILD_ID
+      ),
       { body: commands }
     );
 
     console.log('Slash command /panel registered successfully.');
   } catch (error) {
-    console.error('Error while registering slash command:', error);
+    console.error('Error while registering slash commands:', error);
   }
 });
 
-client.on(Events.InteractionCreate, async (interaction) => {
+/* =========================
+   INTERACTIONS
+========================= */
+client.on(Events.InteractionCreate, async interaction => {
   try {
+    /* ---------- Slash Commands ---------- */
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === 'panel') {
-        const panelEmbed = new EmbedBuilder()
-          .setColor(0x57F287)
-          .setTitle('Ticket')
-          .setDescription('Use the button below to create a ticket.');
-
-        const row = new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setCustomId('create_ticket')
-            .setLabel('📩 Create ticket')
-            .setStyle(ButtonStyle.Secondary)
-        );
-
         await interaction.reply({
-          embeds: [panelEmbed],
-          components: [row]
+          embeds: [buildTicketPanelEmbed()],
+          components: [buildCreateTicketRow()],
         });
       }
+      return;
     }
 
+    /* ---------- Buttons ---------- */
     if (interaction.isButton()) {
       if (interaction.customId === 'create_ticket') {
-        const typeRow = new ActionRowBuilder().addComponents(
-          new StringSelectMenuBuilder()
-            .setCustomId('ticket_type_select')
-            .setPlaceholder('Select ticket type')
-            .addOptions([
-              {
-                label: 'Buy',
-                description: 'Open a purchase ticket',
-                value: 'buy',
-                emoji: '🛒'
-              },
-              {
-                label: 'Support / Questions',
-                description: 'Open a support ticket',
-                value: 'support',
-                emoji: '❓'
-              }
-            ])
-        );
-
         await interaction.reply({
           content: 'Select the type of ticket you want to open:',
-          components: [typeRow],
-          ephemeral: true
+          components: [buildTypeSelectRow()],
+          ephemeral: true,
         });
+        return;
       }
 
       if (interaction.customId === 'close_ticket') {
         await interaction.reply({
           content: 'Closing ticket...',
-          ephemeral: true
+          ephemeral: true,
         });
 
         await interaction.channel.delete();
+        return;
       }
     }
 
+    /* ---------- Select Menus ---------- */
     if (interaction.isStringSelectMenu()) {
       if (interaction.customId === 'ticket_type_select') {
         const selected = interaction.values[0];
 
         if (selected === 'buy') {
-          const buyRow = new ActionRowBuilder().addComponents(
-            new StringSelectMenuBuilder()
-              .setCustomId('buy_game_select')
-              .setPlaceholder('Select game/service')
-              .addOptions([
-                {
-                  label: 'Jurassic World The Game',
-                  description: 'Open a Jurassic World The Game order ticket',
-                  value: 'jwtg',
-                  emoji: '🦖'
-                },
-                {
-                  label: 'Pokémon Go',
-                  description: 'Open a Pokémon Go order ticket',
-                  value: 'pogo',
-                  emoji: '⚡'
-                }
-              ])
-          );
-
           await interaction.update({
             content: 'Select the game/service you want:',
-            components: [buyRow]
+            components: [buildBuyGameRow()],
           });
+          return;
         }
 
         if (selected === 'support') {
-          const modal = new ModalBuilder()
-            .setCustomId('modal_support')
-            .setTitle('Support / Questions');
-
-          const subjectInput = new TextInputBuilder()
-            .setCustomId('support_subject')
-            .setLabel('Subject')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true);
-
-          const descriptionInput = new TextInputBuilder()
-            .setCustomId('support_description')
-            .setLabel('Explain your issue or question')
-            .setStyle(TextInputStyle.Paragraph)
-            .setRequired(true);
-
-          modal.addComponents(
-            new ActionRowBuilder().addComponents(subjectInput),
-            new ActionRowBuilder().addComponents(descriptionInput)
-          );
-
-          await interaction.showModal(modal);
+          await interaction.showModal(buildSupportModal());
+          return;
         }
       }
 
@@ -283,71 +410,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
         const selectedGame = interaction.values[0];
 
         if (selectedGame === 'jwtg') {
-          const modal = new ModalBuilder()
-            .setCustomId('modal_jwtg')
-            .setTitle('Jurassic World The Game Order');
-
-          const itemInput = new TextInputBuilder()
-            .setCustomId('buy_item')
-            .setLabel('What do you want to buy?')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true);
-
-          const descriptionInput = new TextInputBuilder()
-            .setCustomId('order_description')
-            .setLabel('Order description')
-            .setStyle(TextInputStyle.Paragraph)
-            .setRequired(true);
-
-          const contactInput = new TextInputBuilder()
-            .setCustomId('contact_info')
-            .setLabel('Username / contact info')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true);
-
-          modal.addComponents(
-            new ActionRowBuilder().addComponents(itemInput),
-            new ActionRowBuilder().addComponents(descriptionInput),
-            new ActionRowBuilder().addComponents(contactInput)
-          );
-
-          await interaction.showModal(modal);
+          await interaction.showModal(buildJwtgModal());
+          return;
         }
 
         if (selectedGame === 'pogo') {
-          const modal = new ModalBuilder()
-            .setCustomId('modal_pogo')
-            .setTitle('Pokémon Go Order');
-
-          const itemInput = new TextInputBuilder()
-            .setCustomId('buy_item')
-            .setLabel('What do you want to buy?')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true);
-
-          const descriptionInput = new TextInputBuilder()
-            .setCustomId('order_description')
-            .setLabel('Order description')
-            .setStyle(TextInputStyle.Paragraph)
-            .setRequired(true);
-
-          const contactInput = new TextInputBuilder()
-            .setCustomId('contact_info')
-            .setLabel('Trainer name / contact info')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true);
-
-          modal.addComponents(
-            new ActionRowBuilder().addComponents(itemInput),
-            new ActionRowBuilder().addComponents(descriptionInput),
-            new ActionRowBuilder().addComponents(contactInput)
-          );
-
-          await interaction.showModal(modal);
+          await interaction.showModal(buildPogoModal());
+          return;
         }
       }
     }
 
+    /* ---------- Modal Submit ---------- */
     if (interaction.isModalSubmit()) {
       if (interaction.customId === 'modal_jwtg') {
         const buyItem = interaction.fields.getTextInputValue('buy_item');
@@ -370,8 +444,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await createTicketChannel({
           interaction,
           type: 'jwtg',
-          embed
+          embed,
         });
+        return;
       }
 
       if (interaction.customId === 'modal_pogo') {
@@ -395,8 +470,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await createTicketChannel({
           interaction,
           type: 'pogo',
-          embed
+          embed,
         });
+        return;
       }
 
       if (interaction.customId === 'modal_support') {
@@ -417,18 +493,23 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await createTicketChannel({
           interaction,
           type: 'support',
-          embed
+          embed,
         });
+        return;
       }
     }
   } catch (error) {
     console.error('Interaction error:', error);
 
-    if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-      await interaction.reply({
-        content: 'An error occurred while processing your request.',
-        ephemeral: true
-      });
+    try {
+      if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          content: 'An error occurred while processing your request.',
+          ephemeral: true,
+        });
+      }
+    } catch (replyError) {
+      console.error('Reply error:', replyError);
     }
   }
 });
