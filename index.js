@@ -17,6 +17,7 @@ const {
   TextInputBuilder,
   TextInputStyle,
   EmbedBuilder,
+  OverwriteType,
 } = require('discord.js');
 
 const client = new Client({
@@ -94,6 +95,34 @@ function getTicketOwnerIdFromTopic(topic) {
 
   const match = topic.match(/ticketOwnerId:(\d+)/);
   return match ? match[1] : null;
+}
+
+function getTicketOwnerIdFromPermissions(channel) {
+  if (!channel || !channel.permissionOverwrites) return null;
+
+  const ownerRoleId = process.env.OWNER_ROLE_ID;
+  const everyoneId = channel.guild.roles.everyone.id;
+
+  const userOverwrite = channel.permissionOverwrites.cache.find(overwrite => {
+    if (overwrite.type !== OverwriteType.Member) return false;
+    if (overwrite.id === ownerRoleId) return false;
+    if (overwrite.id === everyoneId) return false;
+
+    const canView = overwrite.allow.has(PermissionsBitField.Flags.ViewChannel);
+    return canView;
+  });
+
+  return userOverwrite ? userOverwrite.id : null;
+}
+
+function getTicketOwnerId(channel) {
+  const fromTopic = getTicketOwnerIdFromTopic(channel.topic);
+  if (fromTopic) return fromTopic;
+
+  const fromPermissions = getTicketOwnerIdFromPermissions(channel);
+  if (fromPermissions) return fromPermissions;
+
+  return null;
 }
 
 function buildTicketPanelEmbed() {
@@ -393,11 +422,11 @@ client.on(Events.InteractionCreate, async interaction => {
           return;
         }
 
-        const ownerId = getTicketOwnerIdFromTopic(interaction.channel.topic);
+        const ownerId = getTicketOwnerId(interaction.channel);
 
         if (!ownerId) {
           await interaction.reply({
-            content: 'I could not find the ticket owner in this channel.',
+            content: 'I could not find the ticket owner in this channel. This may be an old ticket with no saved owner data.',
             ephemeral: true,
           });
           return;
