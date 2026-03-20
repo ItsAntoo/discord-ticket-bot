@@ -23,6 +23,9 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
+/* =========================
+   BASIC CONFIG CHECK
+========================= */
 const requiredEnv = [
   'TOKEN',
   'CLIENT_ID',
@@ -39,22 +42,18 @@ for (const key of requiredEnv) {
   }
 }
 
+/* =========================
+   SLASH COMMANDS
+========================= */
 const commands = [
   new SlashCommandBuilder()
     .setName('panel')
     .setDescription('Send the ticket panel'),
-
-  new SlashCommandBuilder()
-    .setName('remind')
-    .setDescription('Send a DM reminder to the ticket owner')
-    .addStringOption(option =>
-      option
-        .setName('message')
-        .setDescription('Custom reminder message')
-        .setRequired(false)
-    ),
 ].map(cmd => cmd.toJSON());
 
+/* =========================
+   HELPERS
+========================= */
 function sanitizeUsername(username) {
   return username
     .toLowerCase()
@@ -77,23 +76,6 @@ function getCategoryId(type) {
   if (type === 'pogo') return process.env.POKEMON_CATEGORY_ID;
   if (type === 'support') return process.env.SUPPORT_CATEGORY_ID;
   return null;
-}
-
-function isTicketChannel(channel) {
-  if (!channel || channel.type !== ChannelType.GuildText) return false;
-
-  return (
-    channel.name.startsWith('jwtg-') ||
-    channel.name.startsWith('pogo-') ||
-    channel.name.startsWith('support-')
-  );
-}
-
-function getTicketOwnerIdFromTopic(topic) {
-  if (!topic) return null;
-
-  const match = topic.match(/ticketOwnerId:(\d+)/);
-  return match ? match[1] : null;
 }
 
 function buildTicketPanelEmbed() {
@@ -303,7 +285,6 @@ async function createTicketChannel({ interaction, type, embed }) {
     name: channelName,
     type: ChannelType.GuildText,
     parent: categoryId,
-    topic: `ticketOwnerId:${user.id}`,
     permissionOverwrites: [
       {
         id: guild.roles.everyone.id,
@@ -345,6 +326,9 @@ async function createTicketChannel({ interaction, type, embed }) {
   });
 }
 
+/* =========================
+   READY EVENT
+========================= */
 client.once(Events.ClientReady, async () => {
   console.log(`Bot online as ${client.user.tag}`);
 
@@ -359,85 +343,29 @@ client.once(Events.ClientReady, async () => {
       { body: commands }
     );
 
-    console.log('Slash commands registered successfully.');
+    console.log('Slash command /panel registered successfully.');
   } catch (error) {
     console.error('Error while registering slash commands:', error);
   }
 });
 
+/* =========================
+   INTERACTIONS
+========================= */
 client.on(Events.InteractionCreate, async interaction => {
   try {
+    /* ---------- Slash Commands ---------- */
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === 'panel') {
         await interaction.reply({
           embeds: [buildTicketPanelEmbed()],
           components: [buildCreateTicketRow()],
         });
-        return;
       }
-
-      if (interaction.commandName === 'remind') {
-        if (!interaction.guild || !interaction.channel) {
-          await interaction.reply({
-            content: 'This command can only be used inside a server ticket.',
-            ephemeral: true,
-          });
-          return;
-        }
-
-        if (!isTicketChannel(interaction.channel)) {
-          await interaction.reply({
-            content: 'You can only use /remind inside a ticket channel.',
-            ephemeral: true,
-          });
-          return;
-        }
-
-        const ownerId = getTicketOwnerIdFromTopic(interaction.channel.topic);
-
-        if (!ownerId) {
-          await interaction.reply({
-            content: 'I could not find the ticket owner in this channel.',
-            ephemeral: true,
-          });
-          return;
-        }
-
-        const customMessage = interaction.options.getString('message');
-        const dmMessage =
-          customMessage ||
-          'Hello! We are waiting for your reply in your ticket. Please check it when you can.';
-
-        try {
-          const user = await client.users.fetch(ownerId);
-
-          await user.send({
-            embeds: [
-              new EmbedBuilder()
-                .setColor(0x57F287)
-                .setTitle('Ticket Reminder')
-                .setDescription(dmMessage)
-                .setFooter({ text: interaction.guild.name }),
-            ],
-          });
-
-          await interaction.reply({
-            content: `Reminder sent to ${user}.`,
-            ephemeral: true,
-          });
-        } catch (dmError) {
-          console.error('DM error:', dmError);
-
-          await interaction.reply({
-            content: 'I could not send a DM to the ticket owner.',
-            ephemeral: true,
-          });
-        }
-
-        return;
-      }
+      return;
     }
 
+    /* ---------- Buttons ---------- */
     if (interaction.isButton()) {
       if (interaction.customId === 'create_ticket') {
         await interaction.reply({
@@ -459,6 +387,7 @@ client.on(Events.InteractionCreate, async interaction => {
       }
     }
 
+    /* ---------- Select Menus ---------- */
     if (interaction.isStringSelectMenu()) {
       if (interaction.customId === 'ticket_type_select') {
         const selected = interaction.values[0];
@@ -492,6 +421,7 @@ client.on(Events.InteractionCreate, async interaction => {
       }
     }
 
+    /* ---------- Modal Submit ---------- */
     if (interaction.isModalSubmit()) {
       if (interaction.customId === 'modal_jwtg') {
         const buyItem = interaction.fields.getTextInputValue('buy_item');
