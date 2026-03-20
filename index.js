@@ -18,10 +18,16 @@ const {
   TextInputStyle,
   EmbedBuilder,
   OverwriteType,
+  AttachmentBuilder,
 } = require('discord.js');
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.DirectMessages,
+  ],
 });
 
 const requiredEnv = [
@@ -32,6 +38,8 @@ const requiredEnv = [
   'JURASSIC_CATEGORY_ID',
   'POKEMON_CATEGORY_ID',
   'SUPPORT_CATEGORY_ID',
+  'LOG_CHANNEL_ID',
+  'VOUCH_CHANNEL_ID',
 ];
 
 for (const key of requiredEnv) {
@@ -53,6 +61,40 @@ const commands = [
         .setName('message')
         .setDescription('Custom reminder message')
         .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('vouch')
+    .setDescription('Leave feedback about the service')
+    .addStringOption(option =>
+      option
+        .setName('review')
+        .setDescription('Write your feedback')
+        .setRequired(true)
+    )
+    .addIntegerOption(option =>
+      option
+        .setName('stars')
+        .setDescription('Rate the service from 1 to 5')
+        .setRequired(true)
+        .setMinValue(1)
+        .setMaxValue(5)
+    )
+    .addAttachmentOption(option =>
+      option
+        .setName('image')
+        .setDescription('Optional screenshot/image')
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('requestvouch')
+    .setDescription('Ask a user to leave a vouch')
+    .addUserOption(option =>
+      option
+        .setName('user')
+        .setDescription('The user you want to ask for feedback')
+        .setRequired(true)
     ),
 ].map(cmd => cmd.toJSON());
 
@@ -299,6 +341,105 @@ async function findExistingTicket(guild, channelName) {
   );
 }
 
+function formatMessageForTranscript(message) {
+  const createdAt = new Date(message.createdTimestamp).toLocaleString('en-GB');
+  const author = `${message.author?.tag || 'Unknown User'} (${message.author?.id || 'Unknown ID'})`;
+  const content = message.content?.trim() ? message.content : '[No text content]';
+
+  const attachments = message.attachments.size > 0
+    ? `\nAttachments:\n${message.attachments.map(att => att.url).join('\n')}`
+    : '';
+
+  return `[${createdAt}] ${author}\n${content}${attachments}\n`;
+}
+
+async function fetchAllMessages(channel) {
+  let allMessages = [];
+  let lastId;
+
+  while (true) {
+    const options = { limit: 100 };
+    if (lastId) options.before = lastId;
+
+    const messages = await channel.messages.fetch(options);
+    if (messages.size === 0) break;
+
+    const fetched = [...messages.values()];
+    allMessages.push(...fetched);
+
+    lastId = fetched[fetched.length - 1].id;
+
+    if (messages.size < 100) break;
+  }
+
+  return allMessages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+}
+
+async function createTranscriptAttachment(channel) {
+  const messages = await fetchAllMessages(channel);
+
+  let transcript = '';
+  transcript += `Server: ${channel.guild.name}\n`;
+  transcript += `Channel: #${channel.name}\n`;
+  transcript += `Created transcript at: ${new Date().toLocaleString('en-GB')}\n`;
+  transcript += `Topic: ${channel.topic || 'No topic'}\n`;
+  transcript += '\n====================\n\n';
+
+  for (const message of messages) {
+    transcript += formatMessageForTranscript(message);
+    transcript += '\n--------------------\n\n';
+  }
+
+  const buffer = Buffer.from(transcript, 'utf-8');
+  return new AttachmentBuilder(buffer, { name: `${channel.name}-transcript.txt` });
+}
+
+async function sendTranscriptBeforeClosing(channel, closedByUser) {
+  const ownerId = getTicketOwnerId(channel);
+  const logChannel = await client.channels.fetch(process.env.LOG_CHANNEL_ID).catch(() => null);
+  const transcriptAttachment = await createTranscriptAttachment(channel);
+
+  const summaryEmbed = new EmbedBuilder()
+    .setColor(0xED4245)
+    .setTitle('Ticket Closed')
+    .addFields(
+      { name: 'Channel', value: channel.name, inline: false },
+      { name: 'Closed by', value: `${closedByUser.tag} (${closedByUser.id})`, inline: false },
+      { name: 'Ticket owner ID', value: ownerId || 'Not found', inline: false }
+    )
+    .setTimestamp();
+
+  if (logChannel && logChannel.type === ChannelType.GuildText) {
+    await logChannel.send({
+      embeds: [summaryEmbed],
+      files: [transcriptAttachment],
+    }).catch(console.error);
+  }
+
+  if (ownerId) {
+    const ownerUser = await client.users.fetch(ownerId).catch(() => null);
+
+    if (ownerUser) {
+      const ownerTranscriptAttachment = await createTranscriptAttachment(channel);
+
+      await ownerUser.send({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0x57F287)
+            .setTitle('Your Ticket Transcript')
+            .setDescription('Here is the transcript of your ticket.')
+            .setTimestamp(),
+        ],
+        files: [ownerTranscriptAttachment],
+      }).catch(console.error);
+    }
+  }
+}
+
+function buildStars(stars) {
+  return '⭐'.repeat(stars);
+}
+
 async function createTicketChannel({ interaction, type, embed }) {
   const guild = interaction.guild;
   const user = interaction.user;
@@ -465,6 +606,112 @@ client.on(Events.InteractionCreate, async interaction => {
 
         return;
       }
+
+      if (interaction.commandName === 'vouch') {
+        if (!interaction.guild) {
+          await interaction.reply({
+            content: 'This command can only be used inside a server.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const review = interaction.options.getString('review', true);
+        const stars = interaction.options.getInteger('stars', true);
+        const image = interaction.options.getAttachment('image');
+
+        const vouchChannel = await client.channels.fetch(process.env.VOUCH_CHANNEL_ID).catch(() => null);
+
+        if (!vouchChannel || vouchChannel.type !== ChannelType.GuildText) {
+          await interaction.reply({
+            content: 'The vouch channel is not configured correctly.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        if (image && image.contentType && !image.contentType.startsWith('image/')) {
+          await interaction.reply({
+            content: 'The attachment must be an image.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const vouchEmbed = new EmbedBuilder()
+          .setColor(0xFEE75C)
+          .setTitle('New Vouch')
+          .addFields(
+            { name: 'Client', value: `${interaction.user}`, inline: false },
+            { name: 'Rating', value: buildStars(stars), inline: false },
+            { name: 'Feedback', value: review, inline: false }
+          )
+          .setThumbnail(interaction.user.displayAvatarURL({ extension: 'png', size: 256 }))
+          .setTimestamp();
+
+        if (image) {
+          vouchEmbed.setImage(image.url);
+        }
+
+        await vouchChannel.send({
+          embeds: [vouchEmbed],
+        });
+
+        await interaction.reply({
+          content: 'Your vouch has been sent successfully. Thank you!',
+          ephemeral: true,
+        });
+
+        return;
+      }
+
+      if (interaction.commandName === 'requestvouch') {
+        if (!interaction.guild) {
+          await interaction.reply({
+            content: 'This command can only be used inside a server.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        if (!interaction.member.roles.cache.has(process.env.OWNER_ROLE_ID)) {
+          await interaction.reply({
+            content: 'You are not allowed to use this command.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const targetUser = interaction.options.getUser('user', true);
+
+        try {
+          await targetUser.send({
+            embeds: [
+              new EmbedBuilder()
+                .setColor(0xFEE75C)
+                .setTitle('Feedback Request')
+                .setDescription(
+                  `Hello! We would love to hear your feedback.\n\nPlease use the command \`/vouch\` in the server to leave your review.\n\nYou can also include:\n- a rating from 1 to 5 stars\n- an optional image`
+                )
+                .setFooter({ text: interaction.guild.name }),
+            ],
+          });
+
+          await interaction.reply({
+            content: `Feedback request sent to ${targetUser}.`,
+            ephemeral: true,
+          });
+        } catch (error) {
+          console.error('Request vouch DM error:', error);
+
+          await interaction.reply({
+            content: 'I could not send a DM to that user.',
+            ephemeral: true,
+          });
+        }
+
+        return;
+      }
     }
 
     if (interaction.isButton()) {
@@ -478,11 +725,20 @@ client.on(Events.InteractionCreate, async interaction => {
       }
 
       if (interaction.customId === 'close_ticket') {
+        if (!interaction.member.roles.cache.has(process.env.OWNER_ROLE_ID)) {
+          await interaction.reply({
+            content: 'You are not allowed to close this ticket.',
+            ephemeral: true,
+          });
+          return;
+        }
+
         await interaction.reply({
-          content: 'Closing ticket...',
+          content: 'Creating transcript and closing ticket...',
           ephemeral: true,
         });
 
+        await sendTranscriptBeforeClosing(interaction.channel, interaction.user);
         await interaction.channel.delete();
         return;
       }
