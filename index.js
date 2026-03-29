@@ -228,6 +228,50 @@ function buildBuyGameRow() {
   );
 }
 
+function buildPaymentRow(gameType) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`payment_select_${gameType}`)
+      .setPlaceholder('Select your payment method')
+      .addOptions([
+        {
+          label: 'Revolut',
+          value: 'revolut',
+          emoji: '💳',
+        },
+        {
+          label: 'Crypto',
+          value: 'crypto',
+          emoji: '🪙',
+        },
+        {
+          label: 'Giftcards',
+          value: 'giftcards',
+          emoji: '🎁',
+        },
+        {
+          label: 'Credit cards',
+          value: 'credit_cards',
+          emoji: '💠',
+        },
+        {
+          label: 'Bank transfer',
+          value: 'bank_transfer',
+          emoji: '🏦',
+        },
+      ])
+  );
+}
+
+function formatPaymentMethod(value) {
+  if (value === 'revolut') return 'Revolut';
+  if (value === 'crypto') return 'Crypto';
+  if (value === 'giftcards') return 'Giftcards';
+  if (value === 'credit_cards') return 'Credit cards';
+  if (value === 'bank_transfer') return 'Bank transfer';
+  return 'Unknown';
+}
+
 function buildCloseRow() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -238,9 +282,9 @@ function buildCloseRow() {
   );
 }
 
-function buildJwtgModal() {
+function buildJwtgModal(paymentMethod) {
   const modal = new ModalBuilder()
-    .setCustomId('modal_jwtg')
+    .setCustomId(`modal_jwtg_${paymentMethod}`)
     .setTitle('Jurassic World The Game Order');
 
   const itemInput = new TextInputBuilder()
@@ -249,13 +293,6 @@ function buildJwtgModal() {
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
     .setMaxLength(100);
-
-  const descriptionInput = new TextInputBuilder()
-    .setCustomId('order_description')
-    .setLabel('Order description')
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(true)
-    .setMaxLength(1000);
 
   const contactInput = new TextInputBuilder()
     .setCustomId('contact_info')
@@ -266,16 +303,15 @@ function buildJwtgModal() {
 
   modal.addComponents(
     new ActionRowBuilder().addComponents(itemInput),
-    new ActionRowBuilder().addComponents(descriptionInput),
     new ActionRowBuilder().addComponents(contactInput)
   );
 
   return modal;
 }
 
-function buildPogoModal() {
+function buildPogoModal(paymentMethod) {
   const modal = new ModalBuilder()
-    .setCustomId('modal_pogo')
+    .setCustomId(`modal_pogo_${paymentMethod}`)
     .setTitle('Pokémon Go Order');
 
   const itemInput = new TextInputBuilder()
@@ -284,13 +320,6 @@ function buildPogoModal() {
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
     .setMaxLength(100);
-
-  const descriptionInput = new TextInputBuilder()
-    .setCustomId('order_description')
-    .setLabel('Order description')
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(true)
-    .setMaxLength(1000);
 
   const contactInput = new TextInputBuilder()
     .setCustomId('contact_info')
@@ -301,7 +330,6 @@ function buildPogoModal() {
 
   modal.addComponents(
     new ActionRowBuilder().addComponents(itemInput),
-    new ActionRowBuilder().addComponents(descriptionInput),
     new ActionRowBuilder().addComponents(contactInput)
   );
 
@@ -765,22 +793,32 @@ client.on(Events.InteractionCreate, async interaction => {
       if (interaction.customId === 'buy_game_select') {
         const selectedGame = interaction.values[0];
 
-        if (selectedGame === 'jwtg') {
-          await interaction.showModal(buildJwtgModal());
-          return;
-        }
+        await interaction.update({
+          content: 'Select your payment method:',
+          components: [buildPaymentRow(selectedGame)],
+        });
+        return;
+      }
 
-        if (selectedGame === 'pogo') {
-          await interaction.showModal(buildPogoModal());
-          return;
-        }
+      if (interaction.customId === 'payment_select_jwtg') {
+        const paymentMethod = interaction.values[0];
+        await interaction.showModal(buildJwtgModal(paymentMethod));
+        return;
+      }
+
+      if (interaction.customId === 'payment_select_pogo') {
+        const paymentMethod = interaction.values[0];
+        await interaction.showModal(buildPogoModal(paymentMethod));
+        return;
       }
     }
 
     if (interaction.isModalSubmit()) {
-      if (interaction.customId === 'modal_jwtg') {
+      if (interaction.customId.startsWith('modal_jwtg_')) {
+        const paymentMethodValue = interaction.customId.replace('modal_jwtg_', '');
+        const paymentMethod = formatPaymentMethod(paymentMethodValue);
+
         const buyItem = interaction.fields.getTextInputValue('buy_item');
-        const orderDescription = interaction.fields.getTextInputValue('order_description');
         const contactInfo = interaction.fields.getTextInputValue('contact_info');
 
         const embed = new EmbedBuilder()
@@ -791,7 +829,7 @@ client.on(Events.InteractionCreate, async interaction => {
             { name: 'Type', value: 'Buy', inline: true },
             { name: 'Game', value: 'Jurassic World The Game', inline: true },
             { name: 'What do you want to buy?', value: buyItem, inline: false },
-            { name: 'Order description', value: orderDescription, inline: false },
+            { name: 'Payment method', value: paymentMethod, inline: false },
             { name: 'Username / contact info', value: contactInfo, inline: false }
           )
           .setTimestamp();
@@ -804,9 +842,11 @@ client.on(Events.InteractionCreate, async interaction => {
         return;
       }
 
-      if (interaction.customId === 'modal_pogo') {
+      if (interaction.customId.startsWith('modal_pogo_')) {
+        const paymentMethodValue = interaction.customId.replace('modal_pogo_', '');
+        const paymentMethod = formatPaymentMethod(paymentMethodValue);
+
         const buyItem = interaction.fields.getTextInputValue('buy_item');
-        const orderDescription = interaction.fields.getTextInputValue('order_description');
         const contactInfo = interaction.fields.getTextInputValue('contact_info');
 
         const embed = new EmbedBuilder()
@@ -817,7 +857,7 @@ client.on(Events.InteractionCreate, async interaction => {
             { name: 'Type', value: 'Buy', inline: true },
             { name: 'Game', value: 'Pokémon Go', inline: true },
             { name: 'What do you want to buy?', value: buyItem, inline: false },
-            { name: 'Order description', value: orderDescription, inline: false },
+            { name: 'Payment method', value: paymentMethod, inline: false },
             { name: 'Trainer name / contact info', value: contactInfo, inline: false }
           )
           .setTimestamp();
