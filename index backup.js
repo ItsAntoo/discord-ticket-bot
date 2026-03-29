@@ -17,15 +17,19 @@ const {
   TextInputBuilder,
   TextInputStyle,
   EmbedBuilder,
+  OverwriteType,
+  AttachmentBuilder,
 } = require('discord.js');
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.DirectMessages,
+  ],
 });
 
-/* =========================
-   BASIC CONFIG CHECK
-========================= */
 const requiredEnv = [
   'TOKEN',
   'CLIENT_ID',
@@ -34,6 +38,15 @@ const requiredEnv = [
   'JURASSIC_CATEGORY_ID',
   'POKEMON_CATEGORY_ID',
   'SUPPORT_CATEGORY_ID',
+  'LOG_CHANNEL_ID',
+  'VOUCH_CHANNEL_ID',
+  'COINS_CHANNEL_ID',
+  'FOOD_CHANNEL_ID',
+  'DNA_CHANNEL_ID',
+  'CASH_CHANNEL_ID',
+  'LOYALTY_POINTS_CHANNEL_ID',
+  'AMBER_CHANNEL_ID',
+  'S_DNA_CHANNEL_ID',
 ];
 
 for (const key of requiredEnv) {
@@ -42,17 +55,100 @@ for (const key of requiredEnv) {
   }
 }
 
-/* =========================
-   SLASH COMMANDS
-========================= */
 const commands = [
   new SlashCommandBuilder()
     .setName('panel')
     .setDescription('Send the ticket panel'),
+
+  new SlashCommandBuilder()
+    .setName('remind')
+    .setDescription('Send a DM reminder to the ticket owner')
+    .addStringOption(option =>
+      option
+        .setName('message')
+        .setDescription('Custom reminder message')
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('vouch')
+    .setDescription('Leave feedback about the service')
+    .addStringOption(option =>
+      option
+        .setName('review')
+        .setDescription('Write your feedback')
+        .setRequired(true)
+    )
+    .addIntegerOption(option =>
+      option
+        .setName('stars')
+        .setDescription('Rate the service from 1 to 5')
+        .setRequired(true)
+        .setMinValue(1)
+        .setMaxValue(5)
+    )
+    .addAttachmentOption(option =>
+      option
+        .setName('image')
+        .setDescription('Optional screenshot/image')
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('requestvouch')
+    .setDescription('Ask a user to leave a vouch')
+    .addUserOption(option =>
+      option
+        .setName('user')
+        .setDescription('The user you want to ask for feedback')
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('list')
+    .setDescription('Calculate product prices from the product channels'),
 ].map(cmd => cmd.toJSON());
 
+const PRODUCT_CHANNELS = {
+  coins: {
+    label: 'Coins',
+    envKey: 'COINS_CHANNEL_ID',
+    emoji: '🪙',
+  },
+  food: {
+    label: 'Food',
+    envKey: 'FOOD_CHANNEL_ID',
+    emoji: '🍖',
+  },
+  dna: {
+    label: 'DNA',
+    envKey: 'DNA_CHANNEL_ID',
+    emoji: '🧬',
+  },
+  cash: {
+    label: 'Cash',
+    envKey: 'CASH_CHANNEL_ID',
+    emoji: '💵',
+  },
+  lp: {
+    label: 'Loyalty Points',
+    envKey: 'LOYALTY_POINTS_CHANNEL_ID',
+    emoji: '🔵',
+  },
+  amber: {
+    label: 'Amber',
+    envKey: 'AMBER_CHANNEL_ID',
+    emoji: '🟠',
+  },
+  sdna: {
+    label: 'S-DNA',
+    envKey: 'S_DNA_CHANNEL_ID',
+    emoji: '🧪',
+  },
+};
+
 /* =========================
-   HELPERS
+   GENERAL HELPERS
 ========================= */
 function sanitizeUsername(username) {
   return username
@@ -78,6 +174,54 @@ function getCategoryId(type) {
   return null;
 }
 
+function isTicketChannel(channel) {
+  if (!channel || channel.type !== ChannelType.GuildText) return false;
+
+  return (
+    channel.name.startsWith('jwtg-') ||
+    channel.name.startsWith('pogo-') ||
+    channel.name.startsWith('support-')
+  );
+}
+
+function getTicketOwnerIdFromTopic(topic) {
+  if (!topic) return null;
+
+  const match = topic.match(/ticketOwnerId:(\d+)/);
+  return match ? match[1] : null;
+}
+
+function getTicketOwnerIdFromPermissions(channel) {
+  if (!channel || !channel.permissionOverwrites) return null;
+
+  const ownerRoleId = process.env.OWNER_ROLE_ID;
+  const everyoneId = channel.guild.roles.everyone.id;
+
+  const userOverwrite = channel.permissionOverwrites.cache.find(overwrite => {
+    if (overwrite.type !== OverwriteType.Member) return false;
+    if (overwrite.id === ownerRoleId) return false;
+    if (overwrite.id === everyoneId) return false;
+
+    const canView = overwrite.allow.has(PermissionsBitField.Flags.ViewChannel);
+    return canView;
+  });
+
+  return userOverwrite ? userOverwrite.id : null;
+}
+
+function getTicketOwnerId(channel) {
+  const fromTopic = getTicketOwnerIdFromTopic(channel.topic);
+  if (fromTopic) return fromTopic;
+
+  const fromPermissions = getTicketOwnerIdFromPermissions(channel);
+  if (fromPermissions) return fromPermissions;
+
+  return null;
+}
+
+/* =========================
+   PANEL / TICKET UI
+========================= */
 function buildTicketPanelEmbed() {
   return new EmbedBuilder()
     .setColor(0x57F287)
@@ -139,6 +283,50 @@ function buildBuyGameRow() {
   );
 }
 
+function buildPaymentRow(gameType) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`payment_select_${gameType}`)
+      .setPlaceholder('Select your payment method')
+      .addOptions([
+        {
+          label: 'Revolut',
+          value: 'revolut',
+          emoji: '💳',
+        },
+        {
+          label: 'Crypto',
+          value: 'crypto',
+          emoji: '🪙',
+        },
+        {
+          label: 'Giftcards',
+          value: 'giftcards',
+          emoji: '🎁',
+        },
+        {
+          label: 'Credit cards',
+          value: 'credit_cards',
+          emoji: '💠',
+        },
+        {
+          label: 'Bank transfer',
+          value: 'bank_transfer',
+          emoji: '🏦',
+        },
+      ])
+  );
+}
+
+function formatPaymentMethod(value) {
+  if (value === 'revolut') return 'Revolut';
+  if (value === 'crypto') return 'Crypto';
+  if (value === 'giftcards') return 'Giftcards';
+  if (value === 'credit_cards') return 'Credit cards';
+  if (value === 'bank_transfer') return 'Bank transfer';
+  return 'Unknown';
+}
+
 function buildCloseRow() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -149,9 +337,12 @@ function buildCloseRow() {
   );
 }
 
-function buildJwtgModal() {
+/* =========================
+   TICKET MODALS
+========================= */
+function buildJwtgModal(paymentMethod) {
   const modal = new ModalBuilder()
-    .setCustomId('modal_jwtg')
+    .setCustomId(`modal_jwtg_${paymentMethod}`)
     .setTitle('Jurassic World The Game Order');
 
   const itemInput = new TextInputBuilder()
@@ -160,13 +351,6 @@ function buildJwtgModal() {
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
     .setMaxLength(100);
-
-  const descriptionInput = new TextInputBuilder()
-    .setCustomId('order_description')
-    .setLabel('Order description')
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(true)
-    .setMaxLength(1000);
 
   const contactInput = new TextInputBuilder()
     .setCustomId('contact_info')
@@ -177,16 +361,15 @@ function buildJwtgModal() {
 
   modal.addComponents(
     new ActionRowBuilder().addComponents(itemInput),
-    new ActionRowBuilder().addComponents(descriptionInput),
     new ActionRowBuilder().addComponents(contactInput)
   );
 
   return modal;
 }
 
-function buildPogoModal() {
+function buildPogoModal(paymentMethod) {
   const modal = new ModalBuilder()
-    .setCustomId('modal_pogo')
+    .setCustomId(`modal_pogo_${paymentMethod}`)
     .setTitle('Pokémon Go Order');
 
   const itemInput = new TextInputBuilder()
@@ -195,13 +378,6 @@ function buildPogoModal() {
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
     .setMaxLength(100);
-
-  const descriptionInput = new TextInputBuilder()
-    .setCustomId('order_description')
-    .setLabel('Order description')
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(true)
-    .setMaxLength(1000);
 
   const contactInput = new TextInputBuilder()
     .setCustomId('contact_info')
@@ -212,7 +388,6 @@ function buildPogoModal() {
 
   modal.addComponents(
     new ActionRowBuilder().addComponents(itemInput),
-    new ActionRowBuilder().addComponents(descriptionInput),
     new ActionRowBuilder().addComponents(contactInput)
   );
 
@@ -246,10 +421,260 @@ function buildSupportModal() {
   return modal;
 }
 
+/* =========================
+   LIST / PRICE CALCULATOR UI
+========================= */
+function buildListProductRow() {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId('list_products_select')
+      .setPlaceholder('Select up to 5 products')
+      .setMinValues(1)
+      .setMaxValues(5)
+      .addOptions([
+        {
+          label: 'Coins',
+          value: 'coins',
+          emoji: '🪙',
+        },
+        {
+          label: 'Food',
+          value: 'food',
+          emoji: '🍖',
+        },
+        {
+          label: 'DNA',
+          value: 'dna',
+          emoji: '🧬',
+        },
+        {
+          label: 'Cash',
+          value: 'cash',
+          emoji: '💵',
+        },
+        {
+          label: 'Loyalty Points',
+          value: 'lp',
+          emoji: '🔵',
+        },
+        {
+          label: 'Amber',
+          value: 'amber',
+          emoji: '🟠',
+        },
+        {
+          label: 'S-DNA',
+          value: 'sdna',
+          emoji: '🧪',
+        },
+      ])
+  );
+}
+
+function parseAmountInput(input) {
+  const cleaned = String(input).replace(/[^\d]/g, '');
+  return Number(cleaned);
+}
+
+function parseEuroToCents(input) {
+  const cleaned = String(input)
+    .replace(/[^\d.,]/g, '')
+    .replace(',', '.');
+
+  const value = Number.parseFloat(cleaned);
+  if (Number.isNaN(value)) return null;
+
+  return Math.round(value * 100);
+}
+
+function formatAmount(amount) {
+  return new Intl.NumberFormat('it-IT').format(amount);
+}
+
+function formatEuroFromCents(cents) {
+  return `${(cents / 100).toFixed(2)}€`;
+}
+
+function extractOffersFromText(text) {
+  const offers = [];
+  const regex = /([\d.,]+)\s*>>\s*([\d.,]+)\s*€/g;
+
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    const quantity = parseAmountInput(match[1]);
+    const priceCents = parseEuroToCents(match[2]);
+
+    if (!quantity || priceCents === null) continue;
+
+    offers.push({
+      quantity,
+      priceCents,
+    });
+  }
+
+  return offers;
+}
+
+async function fetchOffersForProduct(productKey) {
+  const config = PRODUCT_CHANNELS[productKey];
+  if (!config) return [];
+
+  const channelId = process.env[config.envKey];
+  if (!channelId) return [];
+
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel || channel.type !== ChannelType.GuildText) return [];
+
+  const messages = await fetchAllMessages(channel);
+  let offers = [];
+
+  for (const message of messages) {
+    offers.push(...extractOffersFromText(message.content));
+  }
+
+  const unique = new Map();
+  for (const offer of offers) {
+    const key = `${offer.quantity}-${offer.priceCents}`;
+    unique.set(key, offer);
+  }
+
+  offers = [...unique.values()].sort((a, b) => b.quantity - a.quantity);
+  return offers;
+}
+
+function findBestExactPrice(amount, offers) {
+  const memo = new Map();
+
+  function solve(remaining) {
+    if (remaining === 0) return 0;
+    if (remaining < 0) return null;
+    if (memo.has(remaining)) return memo.get(remaining);
+
+    let best = null;
+
+    for (const offer of offers) {
+      const sub = solve(remaining - offer.quantity);
+      if (sub !== null) {
+        const total = sub + offer.priceCents;
+        if (best === null || total < best) {
+          best = total;
+        }
+      }
+    }
+
+    memo.set(remaining, best);
+    return best;
+  }
+
+  return solve(amount);
+}
+
+/* =========================
+   TICKET / TRANSCRIPT HELPERS
+========================= */
 async function findExistingTicket(guild, channelName) {
   return guild.channels.cache.find(
     ch => ch.type === ChannelType.GuildText && ch.name === channelName
   );
+}
+
+function formatMessageForTranscript(message) {
+  const createdAt = new Date(message.createdTimestamp).toLocaleString('en-GB');
+  const author = `${message.author?.tag || 'Unknown User'} (${message.author?.id || 'Unknown ID'})`;
+  const content = message.content?.trim() ? message.content : '[No text content]';
+
+  const attachments = message.attachments.size > 0
+    ? `\nAttachments:\n${message.attachments.map(att => att.url).join('\n')}`
+    : '';
+
+  return `[${createdAt}] ${author}\n${content}${attachments}\n`;
+}
+
+async function fetchAllMessages(channel) {
+  let allMessages = [];
+  let lastId;
+
+  while (true) {
+    const options = { limit: 100 };
+    if (lastId) options.before = lastId;
+
+    const messages = await channel.messages.fetch(options);
+    if (messages.size === 0) break;
+
+    const fetched = [...messages.values()];
+    allMessages.push(...fetched);
+
+    lastId = fetched[fetched.length - 1].id;
+
+    if (messages.size < 100) break;
+  }
+
+  return allMessages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+}
+
+async function createTranscriptAttachment(channel) {
+  const messages = await fetchAllMessages(channel);
+
+  let transcript = '';
+  transcript += `Server: ${channel.guild.name}\n`;
+  transcript += `Channel: #${channel.name}\n`;
+  transcript += `Created transcript at: ${new Date().toLocaleString('en-GB')}\n`;
+  transcript += `Topic: ${channel.topic || 'No topic'}\n`;
+  transcript += '\n====================\n\n';
+
+  for (const message of messages) {
+    transcript += formatMessageForTranscript(message);
+    transcript += '\n--------------------\n\n';
+  }
+
+  const buffer = Buffer.from(transcript, 'utf-8');
+  return new AttachmentBuilder(buffer, { name: `${channel.name}-transcript.txt` });
+}
+
+async function sendTranscriptBeforeClosing(channel, closedByUser) {
+  const ownerId = getTicketOwnerId(channel);
+  const logChannel = await client.channels.fetch(process.env.LOG_CHANNEL_ID).catch(() => null);
+  const transcriptAttachment = await createTranscriptAttachment(channel);
+
+  const summaryEmbed = new EmbedBuilder()
+    .setColor(0xED4245)
+    .setTitle('Ticket Closed')
+    .addFields(
+      { name: 'Channel', value: channel.name, inline: false },
+      { name: 'Closed by', value: `${closedByUser.tag} (${closedByUser.id})`, inline: false },
+      { name: 'Ticket owner ID', value: ownerId || 'Not found', inline: false }
+    )
+    .setTimestamp();
+
+  if (logChannel && logChannel.type === ChannelType.GuildText) {
+    await logChannel.send({
+      embeds: [summaryEmbed],
+      files: [transcriptAttachment],
+    }).catch(console.error);
+  }
+
+  if (ownerId) {
+    const ownerUser = await client.users.fetch(ownerId).catch(() => null);
+
+    if (ownerUser) {
+      const ownerTranscriptAttachment = await createTranscriptAttachment(channel);
+
+      await ownerUser.send({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0x57F287)
+            .setTitle('Your Ticket Transcript')
+            .setDescription('Here is the transcript of your ticket.')
+            .setTimestamp(),
+        ],
+        files: [ownerTranscriptAttachment],
+      }).catch(console.error);
+    }
+  }
+}
+
+function buildStars(stars) {
+  return '⭐'.repeat(stars);
 }
 
 async function createTicketChannel({ interaction, type, embed }) {
@@ -285,6 +710,7 @@ async function createTicketChannel({ interaction, type, embed }) {
     name: channelName,
     type: ChannelType.GuildText,
     parent: categoryId,
+    topic: `ticketOwnerId:${user.id}`,
     permissionOverwrites: [
       {
         id: guild.roles.everyone.id,
@@ -327,7 +753,7 @@ async function createTicketChannel({ interaction, type, embed }) {
 }
 
 /* =========================
-   READY EVENT
+   READY
 ========================= */
 client.once(Events.ClientReady, async () => {
   console.log(`Bot online as ${client.user.tag}`);
@@ -343,7 +769,7 @@ client.once(Events.ClientReady, async () => {
       { body: commands }
     );
 
-    console.log('Slash command /panel registered successfully.');
+    console.log('Slash commands registered successfully.');
   } catch (error) {
     console.error('Error while registering slash commands:', error);
   }
@@ -361,8 +787,184 @@ client.on(Events.InteractionCreate, async interaction => {
           embeds: [buildTicketPanelEmbed()],
           components: [buildCreateTicketRow()],
         });
+        return;
       }
-      return;
+
+      if (interaction.commandName === 'remind') {
+        if (!interaction.guild || !interaction.channel) {
+          await interaction.reply({
+            content: 'This command can only be used inside a server ticket.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        if (!isTicketChannel(interaction.channel)) {
+          await interaction.reply({
+            content: 'You can only use /remind inside a ticket channel.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const ownerId = getTicketOwnerId(interaction.channel);
+
+        if (!ownerId) {
+          await interaction.reply({
+            content: 'I could not find the ticket owner in this channel. This may be an old ticket with no saved owner data.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const customMessage = interaction.options.getString('message');
+        const dmMessage =
+          customMessage ||
+          'Hello! We are waiting for your reply in your ticket. Please check it when you can.';
+
+        try {
+          const user = await client.users.fetch(ownerId);
+
+          await user.send({
+            embeds: [
+              new EmbedBuilder()
+                .setColor(0x57F287)
+                .setTitle('Ticket Reminder')
+                .setDescription(dmMessage)
+                .setFooter({ text: interaction.guild.name }),
+            ],
+          });
+
+          await interaction.reply({
+            content: `Reminder sent to ${user}.`,
+            ephemeral: true,
+          });
+        } catch (dmError) {
+          console.error('DM error:', dmError);
+
+          await interaction.reply({
+            content: 'I could not send a DM to the ticket owner.',
+            ephemeral: true,
+          });
+        }
+
+        return;
+      }
+
+      if (interaction.commandName === 'vouch') {
+        if (!interaction.guild) {
+          await interaction.reply({
+            content: 'This command can only be used inside a server.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const review = interaction.options.getString('review', true);
+        const stars = interaction.options.getInteger('stars', true);
+        const image = interaction.options.getAttachment('image');
+
+        const vouchChannel = await client.channels.fetch(process.env.VOUCH_CHANNEL_ID).catch(() => null);
+
+        if (!vouchChannel || vouchChannel.type !== ChannelType.GuildText) {
+          await interaction.reply({
+            content: 'The vouch channel is not configured correctly.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        if (image && image.contentType && !image.contentType.startsWith('image/')) {
+          await interaction.reply({
+            content: 'The attachment must be an image.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const vouchEmbed = new EmbedBuilder()
+          .setColor(0xFEE75C)
+          .setTitle('New Vouch')
+          .addFields(
+            { name: 'Client', value: `${interaction.user}`, inline: false },
+            { name: 'Rating', value: buildStars(stars), inline: false },
+            { name: 'Feedback', value: review, inline: false }
+          )
+          .setThumbnail(interaction.user.displayAvatarURL({ extension: 'png', size: 256 }))
+          .setTimestamp();
+
+        if (image) {
+          vouchEmbed.setImage(image.url);
+        }
+
+        await vouchChannel.send({
+          embeds: [vouchEmbed],
+        });
+
+        await interaction.reply({
+          content: 'Your vouch has been sent successfully. Thank you!',
+          ephemeral: true,
+        });
+
+        return;
+      }
+
+      if (interaction.commandName === 'requestvouch') {
+        if (!interaction.guild) {
+          await interaction.reply({
+            content: 'This command can only be used inside a server.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        if (!interaction.member.roles.cache.has(process.env.OWNER_ROLE_ID)) {
+          await interaction.reply({
+            content: 'You are not allowed to use this command.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const targetUser = interaction.options.getUser('user', true);
+
+        try {
+          await targetUser.send({
+            embeds: [
+              new EmbedBuilder()
+                .setColor(0xFEE75C)
+                .setTitle('Feedback Request')
+                .setDescription(
+                  `Hello! We would love to hear your feedback.\n\nPlease use the command \`/vouch\` in the server to leave your review.\n\nYou can also include:\n- a rating from 1 to 5 stars\n- an optional image`
+                )
+                .setFooter({ text: interaction.guild.name }),
+            ],
+          });
+
+          await interaction.reply({
+            content: `Feedback request sent to ${targetUser}.`,
+            ephemeral: true,
+          });
+        } catch (error) {
+          console.error('Request vouch DM error:', error);
+
+          await interaction.reply({
+            content: 'I could not send a DM to that user.',
+            ephemeral: true,
+          });
+        }
+
+        return;
+      }
+
+      if (interaction.commandName === 'list') {
+        await interaction.reply({
+          content: 'Select the products you want to calculate:',
+          components: [buildListProductRow()],
+          ephemeral: true,
+        });
+        return;
+      }
     }
 
     /* ---------- Buttons ---------- */
@@ -377,11 +979,20 @@ client.on(Events.InteractionCreate, async interaction => {
       }
 
       if (interaction.customId === 'close_ticket') {
+        if (!interaction.member.roles.cache.has(process.env.OWNER_ROLE_ID)) {
+          await interaction.reply({
+            content: 'You are not allowed to close this ticket.',
+            ephemeral: true,
+          });
+          return;
+        }
+
         await interaction.reply({
-          content: 'Closing ticket...',
+          content: 'Creating transcript and closing ticket...',
           ephemeral: true,
         });
 
+        await sendTranscriptBeforeClosing(interaction.channel, interaction.user);
         await interaction.channel.delete();
         return;
       }
@@ -409,23 +1020,103 @@ client.on(Events.InteractionCreate, async interaction => {
       if (interaction.customId === 'buy_game_select') {
         const selectedGame = interaction.values[0];
 
-        if (selectedGame === 'jwtg') {
-          await interaction.showModal(buildJwtgModal());
-          return;
+        await interaction.update({
+          content: 'Select your payment method:',
+          components: [buildPaymentRow(selectedGame)],
+        });
+        return;
+      }
+
+      if (interaction.customId === 'payment_select_jwtg') {
+        const paymentMethod = interaction.values[0];
+        await interaction.showModal(buildJwtgModal(paymentMethod));
+        return;
+      }
+
+      if (interaction.customId === 'payment_select_pogo') {
+        const paymentMethod = interaction.values[0];
+        await interaction.showModal(buildPogoModal(paymentMethod));
+        return;
+      }
+
+      if (interaction.customId === 'list_products_select') {
+        const selectedProducts = interaction.values;
+
+        const modal = new ModalBuilder()
+          .setCustomId(`list_modal|${selectedProducts.join(',')}`)
+          .setTitle('Price Calculator');
+
+        for (const productKey of selectedProducts) {
+          const config = PRODUCT_CHANNELS[productKey];
+          if (!config) continue;
+
+          const input = new TextInputBuilder()
+            .setCustomId(`amount_${productKey}`)
+            .setLabel(`Amount for ${config.label}`)
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('Example: 1500000 or 1.500.000')
+            .setRequired(true)
+            .setMaxLength(20);
+
+          modal.addComponents(
+            new ActionRowBuilder().addComponents(input)
+          );
         }
 
-        if (selectedGame === 'pogo') {
-          await interaction.showModal(buildPogoModal());
-          return;
-        }
+        await interaction.showModal(modal);
+        return;
       }
     }
 
     /* ---------- Modal Submit ---------- */
     if (interaction.isModalSubmit()) {
-      if (interaction.customId === 'modal_jwtg') {
+      if (interaction.customId.startsWith('list_modal|')) {
+        const rawProducts = interaction.customId.split('|')[1] || '';
+        const selectedProducts = rawProducts.split(',').filter(Boolean);
+
+        const lines = [];
+
+        for (const productKey of selectedProducts) {
+          const config = PRODUCT_CHANNELS[productKey];
+          if (!config) continue;
+
+          const rawAmount = interaction.fields.getTextInputValue(`amount_${productKey}`);
+          const amount = parseAmountInput(rawAmount);
+
+          if (!amount || amount <= 0) {
+            lines.push(`${config.label}: invalid amount`);
+            continue;
+          }
+
+          const offers = await fetchOffersForProduct(productKey);
+
+          if (!offers.length) {
+            lines.push(`${config.label}: no prices found`);
+            continue;
+          }
+
+          const bestPriceCents = findBestExactPrice(amount, offers);
+
+          if (bestPriceCents === null) {
+            lines.push(`${config.label}: ${formatAmount(amount)} = not found`);
+            continue;
+          }
+
+          lines.push(`${config.label}: ${formatAmount(amount)} = ${formatEuroFromCents(bestPriceCents)}`);
+        }
+
+        await interaction.reply({
+          content: lines.join('\n'),
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (interaction.customId.startsWith('modal_jwtg_')) {
+        const paymentMethodValue = interaction.customId.replace('modal_jwtg_', '');
+        const paymentMethod = formatPaymentMethod(paymentMethodValue);
+
         const buyItem = interaction.fields.getTextInputValue('buy_item');
-        const orderDescription = interaction.fields.getTextInputValue('order_description');
         const contactInfo = interaction.fields.getTextInputValue('contact_info');
 
         const embed = new EmbedBuilder()
@@ -436,7 +1127,7 @@ client.on(Events.InteractionCreate, async interaction => {
             { name: 'Type', value: 'Buy', inline: true },
             { name: 'Game', value: 'Jurassic World The Game', inline: true },
             { name: 'What do you want to buy?', value: buyItem, inline: false },
-            { name: 'Order description', value: orderDescription, inline: false },
+            { name: 'Payment method', value: paymentMethod, inline: false },
             { name: 'Username / contact info', value: contactInfo, inline: false }
           )
           .setTimestamp();
@@ -449,9 +1140,11 @@ client.on(Events.InteractionCreate, async interaction => {
         return;
       }
 
-      if (interaction.customId === 'modal_pogo') {
+      if (interaction.customId.startsWith('modal_pogo_')) {
+        const paymentMethodValue = interaction.customId.replace('modal_pogo_', '');
+        const paymentMethod = formatPaymentMethod(paymentMethodValue);
+
         const buyItem = interaction.fields.getTextInputValue('buy_item');
-        const orderDescription = interaction.fields.getTextInputValue('order_description');
         const contactInfo = interaction.fields.getTextInputValue('contact_info');
 
         const embed = new EmbedBuilder()
@@ -462,7 +1155,7 @@ client.on(Events.InteractionCreate, async interaction => {
             { name: 'Type', value: 'Buy', inline: true },
             { name: 'Game', value: 'Pokémon Go', inline: true },
             { name: 'What do you want to buy?', value: buyItem, inline: false },
-            { name: 'Order description', value: orderDescription, inline: false },
+            { name: 'Payment method', value: paymentMethod, inline: false },
             { name: 'Trainer name / contact info', value: contactInfo, inline: false }
           )
           .setTimestamp();

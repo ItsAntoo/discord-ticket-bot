@@ -40,6 +40,13 @@ const requiredEnv = [
   'SUPPORT_CATEGORY_ID',
   'LOG_CHANNEL_ID',
   'VOUCH_CHANNEL_ID',
+  'COINS_CHANNEL_ID',
+  'FOOD_CHANNEL_ID',
+  'DNA_CHANNEL_ID',
+  'CASH_CHANNEL_ID',
+  'LOYALTY_POINTS_CHANNEL_ID',
+  'AMBER_CHANNEL_ID',
+  'S_DNA_CHANNEL_ID',
 ];
 
 for (const key of requiredEnv) {
@@ -96,8 +103,53 @@ const commands = [
         .setDescription('The user you want to ask for feedback')
         .setRequired(true)
     ),
+
+  new SlashCommandBuilder()
+    .setName('list')
+    .setDescription('Calculate product prices from the product channels'),
 ].map(cmd => cmd.toJSON());
 
+const PRODUCT_CHANNELS = {
+  coins: {
+    label: 'Coins',
+    envKey: 'COINS_CHANNEL_ID',
+    emoji: '🪙',
+  },
+  food: {
+    label: 'Food',
+    envKey: 'FOOD_CHANNEL_ID',
+    emoji: '🍖',
+  },
+  dna: {
+    label: 'DNA',
+    envKey: 'DNA_CHANNEL_ID',
+    emoji: '🧬',
+  },
+  cash: {
+    label: 'Cash',
+    envKey: 'CASH_CHANNEL_ID',
+    emoji: '💵',
+  },
+  lp: {
+    label: 'Loyalty Points',
+    envKey: 'LOYALTY_POINTS_CHANNEL_ID',
+    emoji: '🔵',
+  },
+  amber: {
+    label: 'Amber',
+    envKey: 'AMBER_CHANNEL_ID',
+    emoji: '🟠',
+  },
+  sdna: {
+    label: 'S-DNA',
+    envKey: 'S_DNA_CHANNEL_ID',
+    emoji: '🧪',
+  },
+};
+
+/* =========================
+   GENERAL HELPERS
+========================= */
 function sanitizeUsername(username) {
   return username
     .toLowerCase()
@@ -167,6 +219,9 @@ function getTicketOwnerId(channel) {
   return null;
 }
 
+/* =========================
+   PANEL / TICKET UI
+========================= */
 function buildTicketPanelEmbed() {
   return new EmbedBuilder()
     .setColor(0x57F287)
@@ -282,6 +337,9 @@ function buildCloseRow() {
   );
 }
 
+/* =========================
+   TICKET MODALS
+========================= */
 function buildJwtgModal(paymentMethod) {
   const modal = new ModalBuilder()
     .setCustomId(`modal_jwtg_${paymentMethod}`)
@@ -363,6 +421,157 @@ function buildSupportModal() {
   return modal;
 }
 
+/* =========================
+   LIST / PRICE CALCULATOR UI
+========================= */
+function buildListProductRow() {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId('list_products_select')
+      .setPlaceholder('Select up to 5 products')
+      .setMinValues(1)
+      .setMaxValues(5)
+      .addOptions([
+        {
+          label: 'Coins',
+          value: 'coins',
+          emoji: '🪙',
+        },
+        {
+          label: 'Food',
+          value: 'food',
+          emoji: '🍖',
+        },
+        {
+          label: 'DNA',
+          value: 'dna',
+          emoji: '🧬',
+        },
+        {
+          label: 'Cash',
+          value: 'cash',
+          emoji: '💵',
+        },
+        {
+          label: 'Loyalty Points',
+          value: 'lp',
+          emoji: '🔵',
+        },
+        {
+          label: 'Amber',
+          value: 'amber',
+          emoji: '🟠',
+        },
+        {
+          label: 'S-DNA',
+          value: 'sdna',
+          emoji: '🧪',
+        },
+      ])
+  );
+}
+
+function parseAmountInput(input) {
+  const cleaned = String(input).replace(/[^\d]/g, '');
+  return Number(cleaned);
+}
+
+function parseEuroToCents(input) {
+  const cleaned = String(input)
+    .replace(/[^\d.,]/g, '')
+    .replace(',', '.');
+
+  const value = Number.parseFloat(cleaned);
+  if (Number.isNaN(value)) return null;
+
+  return Math.round(value * 100);
+}
+
+function formatAmount(amount) {
+  return new Intl.NumberFormat('it-IT').format(amount);
+}
+
+function formatEuroFromCents(cents) {
+  return `${(cents / 100).toFixed(2)}€`;
+}
+
+function extractOffersFromText(text) {
+  const offers = [];
+  const regex = /([\d.,]+)\s*>>\s*([\d.,]+)\s*€/g;
+
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    const quantity = parseAmountInput(match[1]);
+    const priceCents = parseEuroToCents(match[2]);
+
+    if (!quantity || priceCents === null) continue;
+
+    offers.push({
+      quantity,
+      priceCents,
+    });
+  }
+
+  return offers;
+}
+
+async function fetchOffersForProduct(productKey) {
+  const config = PRODUCT_CHANNELS[productKey];
+  if (!config) return [];
+
+  const channelId = process.env[config.envKey];
+  if (!channelId) return [];
+
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel || channel.type !== ChannelType.GuildText) return [];
+
+  const messages = await fetchAllMessages(channel);
+  let offers = [];
+
+  for (const message of messages) {
+    offers.push(...extractOffersFromText(message.content));
+  }
+
+  const unique = new Map();
+  for (const offer of offers) {
+    const key = `${offer.quantity}-${offer.priceCents}`;
+    unique.set(key, offer);
+  }
+
+  offers = [...unique.values()].sort((a, b) => b.quantity - a.quantity);
+  return offers;
+}
+
+function findBestExactPrice(amount, offers) {
+  const memo = new Map();
+
+  function solve(remaining) {
+    if (remaining === 0) return 0;
+    if (remaining < 0) return null;
+    if (memo.has(remaining)) return memo.get(remaining);
+
+    let best = null;
+
+    for (const offer of offers) {
+      const sub = solve(remaining - offer.quantity);
+      if (sub !== null) {
+        const total = sub + offer.priceCents;
+        if (best === null || total < best) {
+          best = total;
+        }
+      }
+    }
+
+    memo.set(remaining, best);
+    return best;
+  }
+
+  return solve(amount);
+}
+
+/* =========================
+   TICKET / TRANSCRIPT HELPERS
+========================= */
 async function findExistingTicket(guild, channelName) {
   return guild.channels.cache.find(
     ch => ch.type === ChannelType.GuildText && ch.name === channelName
@@ -543,6 +752,9 @@ async function createTicketChannel({ interaction, type, embed }) {
   });
 }
 
+/* =========================
+   READY
+========================= */
 client.once(Events.ClientReady, async () => {
   console.log(`Bot online as ${client.user.tag}`);
 
@@ -563,8 +775,12 @@ client.once(Events.ClientReady, async () => {
   }
 });
 
+/* =========================
+   INTERACTIONS
+========================= */
 client.on(Events.InteractionCreate, async interaction => {
   try {
+    /* ---------- Slash Commands ---------- */
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === 'panel') {
         await interaction.reply({
@@ -740,8 +956,18 @@ client.on(Events.InteractionCreate, async interaction => {
 
         return;
       }
+
+      if (interaction.commandName === 'list') {
+        await interaction.reply({
+          content: 'Select the products you want to calculate:',
+          components: [buildListProductRow()],
+          ephemeral: true,
+        });
+        return;
+      }
     }
 
+    /* ---------- Buttons ---------- */
     if (interaction.isButton()) {
       if (interaction.customId === 'create_ticket') {
         await interaction.reply({
@@ -772,6 +998,7 @@ client.on(Events.InteractionCreate, async interaction => {
       }
     }
 
+    /* ---------- Select Menus ---------- */
     if (interaction.isStringSelectMenu()) {
       if (interaction.customId === 'ticket_type_select') {
         const selected = interaction.values[0];
@@ -811,9 +1038,80 @@ client.on(Events.InteractionCreate, async interaction => {
         await interaction.showModal(buildPogoModal(paymentMethod));
         return;
       }
+
+      if (interaction.customId === 'list_products_select') {
+        const selectedProducts = interaction.values;
+
+        const modal = new ModalBuilder()
+          .setCustomId(`list_modal|${selectedProducts.join(',')}`)
+          .setTitle('Price Calculator');
+
+        for (const productKey of selectedProducts) {
+          const config = PRODUCT_CHANNELS[productKey];
+          if (!config) continue;
+
+          const input = new TextInputBuilder()
+            .setCustomId(`amount_${productKey}`)
+            .setLabel(`Amount for ${config.label}`)
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('Example: 1500000 or 1.500.000')
+            .setRequired(true)
+            .setMaxLength(20);
+
+          modal.addComponents(
+            new ActionRowBuilder().addComponents(input)
+          );
+        }
+
+        await interaction.showModal(modal);
+        return;
+      }
     }
 
+    /* ---------- Modal Submit ---------- */
     if (interaction.isModalSubmit()) {
+      if (interaction.customId.startsWith('list_modal|')) {
+        const rawProducts = interaction.customId.split('|')[1] || '';
+        const selectedProducts = rawProducts.split(',').filter(Boolean);
+
+        const lines = [];
+
+        for (const productKey of selectedProducts) {
+          const config = PRODUCT_CHANNELS[productKey];
+          if (!config) continue;
+
+          const rawAmount = interaction.fields.getTextInputValue(`amount_${productKey}`);
+          const amount = parseAmountInput(rawAmount);
+
+          if (!amount || amount <= 0) {
+            lines.push(`${config.label}: invalid amount`);
+            continue;
+          }
+
+          const offers = await fetchOffersForProduct(productKey);
+
+          if (!offers.length) {
+            lines.push(`${config.label}: no prices found`);
+            continue;
+          }
+
+          const bestPriceCents = findBestExactPrice(amount, offers);
+
+          if (bestPriceCents === null) {
+            lines.push(`${config.label}: ${formatAmount(amount)} = not found`);
+            continue;
+          }
+
+          lines.push(`${config.label}: ${formatAmount(amount)} = ${formatEuroFromCents(bestPriceCents)}`);
+        }
+
+        await interaction.reply({
+          content: lines.join('\n'),
+          ephemeral: true,
+        });
+        return;
+      }
+
       if (interaction.customId.startsWith('modal_jwtg_')) {
         const paymentMethodValue = interaction.customId.replace('modal_jwtg_', '');
         const paymentMethod = formatPaymentMethod(paymentMethodValue);
