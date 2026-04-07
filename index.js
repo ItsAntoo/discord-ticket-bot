@@ -107,6 +107,47 @@ const commands = [
   new SlashCommandBuilder()
     .setName('list')
     .setDescription('Calculate product prices from the product channels'),
+
+  new SlashCommandBuilder()
+    .setName('embed')
+    .setDescription('Send a custom embed in a selected channel')
+    .addChannelOption(option =>
+      option
+        .setName('channel')
+        .setDescription('Where to send the embed')
+        .addChannelTypes(ChannelType.GuildText)
+        .setRequired(true)
+    )
+    .addStringOption(option =>
+      option
+        .setName('title')
+        .setDescription('Embed title')
+        .setRequired(false)
+    )
+    .addStringOption(option =>
+      option
+        .setName('description')
+        .setDescription('Embed description')
+        .setRequired(false)
+    )
+    .addStringOption(option =>
+      option
+        .setName('color')
+        .setDescription('Hex color, example: #57F287')
+        .setRequired(false)
+    )
+    .addAttachmentOption(option =>
+      option
+        .setName('image')
+        .setDescription('Main image')
+        .setRequired(false)
+    )
+    .addAttachmentOption(option =>
+      option
+        .setName('thumbnail')
+        .setDescription('Thumbnail image')
+        .setRequired(false)
+    ),
 ].map(cmd => cmd.toJSON());
 
 const PRODUCT_CHANNELS = {
@@ -217,6 +258,15 @@ function getTicketOwnerId(channel) {
   if (fromPermissions) return fromPermissions;
 
   return null;
+}
+
+function parseHexColor(input) {
+  if (!input) return null;
+
+  const cleaned = input.trim().replace('#', '');
+  if (!/^[0-9A-Fa-f]{6}$/.test(cleaned)) return null;
+
+  return parseInt(cleaned, 16);
 }
 
 /* =========================
@@ -963,6 +1013,92 @@ client.on(Events.InteractionCreate, async interaction => {
           components: [buildListProductRow()],
           ephemeral: true,
         });
+        return;
+      }
+
+      if (interaction.commandName === 'embed') {
+        if (!interaction.guild) {
+          await interaction.reply({
+            content: 'This command can only be used inside a server.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        if (!interaction.member.roles.cache.has(process.env.OWNER_ROLE_ID)) {
+          await interaction.reply({
+            content: 'You are not allowed to use this command.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const channel = interaction.options.getChannel('channel', true);
+        const title = interaction.options.getString('title');
+        const description = interaction.options.getString('description');
+        const colorInput = interaction.options.getString('color');
+        const image = interaction.options.getAttachment('image');
+        const thumbnail = interaction.options.getAttachment('thumbnail');
+
+        if (!channel || channel.type !== ChannelType.GuildText) {
+          await interaction.reply({
+            content: 'Please select a valid text channel.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        if (!title && !description && !image && !thumbnail) {
+          await interaction.reply({
+            content: 'You must provide at least a title, a description, an image, or a thumbnail.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        if (image && image.contentType && !image.contentType.startsWith('image/')) {
+          await interaction.reply({
+            content: 'The image attachment must be an image.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        if (thumbnail && thumbnail.contentType && !thumbnail.contentType.startsWith('image/')) {
+          await interaction.reply({
+            content: 'The thumbnail attachment must be an image.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const parsedColor = parseHexColor(colorInput);
+        if (colorInput && parsedColor === null) {
+          await interaction.reply({
+            content: 'Invalid color. Use a hex value like `#57F287`.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const embed = new EmbedBuilder()
+          .setColor(parsedColor ?? 0x2B2D31)
+          .setTimestamp();
+
+        if (title) embed.setTitle(title);
+        if (description) embed.setDescription(description);
+        if (image) embed.setImage(image.url);
+        if (thumbnail) embed.setThumbnail(thumbnail.url);
+
+        await channel.send({
+          embeds: [embed],
+        });
+
+        await interaction.reply({
+          content: `Embed sent in ${channel}.`,
+          ephemeral: true,
+        });
+
         return;
       }
     }
