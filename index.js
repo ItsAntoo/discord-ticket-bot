@@ -372,7 +372,7 @@ function buildJwtgLevel50Row(paymentMethod) {
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId(`jwtg_level50_select_${paymentMethod}`)
-      .setPlaceholder('Sei già livello 50?')
+      .setPlaceholder('Are you already level 50?')
       .addOptions([
         {
           label: 'Yes',
@@ -1179,7 +1179,7 @@ client.on(Events.InteractionCreate, async interaction => {
         const paymentMethod = interaction.values[0];
 
         await interaction.update({
-          content: 'Sei già livello 50?',
+          content: 'Are you already level 50?',
           components: [buildJwtgLevel50Row(paymentMethod)],
         });
         return;
