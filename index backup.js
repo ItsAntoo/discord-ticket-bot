@@ -107,6 +107,47 @@ const commands = [
   new SlashCommandBuilder()
     .setName('list')
     .setDescription('Calculate product prices from the product channels'),
+
+  new SlashCommandBuilder()
+    .setName('embed')
+    .setDescription('Send a custom embed in a selected channel')
+    .addChannelOption(option =>
+      option
+        .setName('channel')
+        .setDescription('Where to send the embed')
+        .addChannelTypes(ChannelType.GuildText)
+        .setRequired(true)
+    )
+    .addStringOption(option =>
+      option
+        .setName('title')
+        .setDescription('Embed title')
+        .setRequired(false)
+    )
+    .addStringOption(option =>
+      option
+        .setName('description')
+        .setDescription('Embed description')
+        .setRequired(false)
+    )
+    .addStringOption(option =>
+      option
+        .setName('color')
+        .setDescription('Hex color, example: #57F287')
+        .setRequired(false)
+    )
+    .addAttachmentOption(option =>
+      option
+        .setName('image')
+        .setDescription('Main image')
+        .setRequired(false)
+    )
+    .addAttachmentOption(option =>
+      option
+        .setName('thumbnail')
+        .setDescription('Thumbnail image')
+        .setRequired(false)
+    ),
 ].map(cmd => cmd.toJSON());
 
 const PRODUCT_CHANNELS = {
@@ -219,6 +260,15 @@ function getTicketOwnerId(channel) {
   return null;
 }
 
+function parseHexColor(input) {
+  if (!input) return null;
+
+  const cleaned = input.trim().replace('#', '');
+  if (!/^[0-9A-Fa-f]{6}$/.test(cleaned)) return null;
+
+  return parseInt(cleaned, 16);
+}
+
 /* =========================
    PANEL / TICKET UI
 ========================= */
@@ -318,6 +368,26 @@ function buildPaymentRow(gameType) {
   );
 }
 
+function buildJwtgLevel50Row(paymentMethod) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`jwtg_level50_select_${paymentMethod}`)
+      .setPlaceholder('Sei già livello 50?')
+      .addOptions([
+        {
+          label: 'Yes',
+          value: 'yes',
+          emoji: '✅',
+        },
+        {
+          label: 'No',
+          value: 'no',
+          emoji: '❌',
+        },
+      ])
+  );
+}
+
 function formatPaymentMethod(value) {
   if (value === 'revolut') return 'Revolut';
   if (value === 'crypto') return 'Crypto';
@@ -340,9 +410,9 @@ function buildCloseRow() {
 /* =========================
    TICKET MODALS
 ========================= */
-function buildJwtgModal(paymentMethod) {
+function buildJwtgModal(paymentMethod, level50) {
   const modal = new ModalBuilder()
-    .setCustomId(`modal_jwtg_${paymentMethod}`)
+    .setCustomId(`modal_jwtg_${paymentMethod}_${level50}`)
     .setTitle('Jurassic World The Game Order');
 
   const itemInput = new TextInputBuilder()
@@ -352,16 +422,8 @@ function buildJwtgModal(paymentMethod) {
     .setRequired(true)
     .setMaxLength(100);
 
-  const contactInput = new TextInputBuilder()
-    .setCustomId('contact_info')
-    .setLabel('Username / contact info')
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setMaxLength(100);
-
   modal.addComponents(
-    new ActionRowBuilder().addComponents(itemInput),
-    new ActionRowBuilder().addComponents(contactInput)
+    new ActionRowBuilder().addComponents(itemInput)
   );
 
   return modal;
@@ -965,6 +1027,92 @@ client.on(Events.InteractionCreate, async interaction => {
         });
         return;
       }
+
+      if (interaction.commandName === 'embed') {
+        if (!interaction.guild) {
+          await interaction.reply({
+            content: 'This command can only be used inside a server.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        if (!interaction.member.roles.cache.has(process.env.OWNER_ROLE_ID)) {
+          await interaction.reply({
+            content: 'You are not allowed to use this command.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const channel = interaction.options.getChannel('channel', true);
+        const title = interaction.options.getString('title');
+        const description = interaction.options.getString('description');
+        const colorInput = interaction.options.getString('color');
+        const image = interaction.options.getAttachment('image');
+        const thumbnail = interaction.options.getAttachment('thumbnail');
+
+        if (!channel || channel.type !== ChannelType.GuildText) {
+          await interaction.reply({
+            content: 'Please select a valid text channel.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        if (!title && !description && !image && !thumbnail) {
+          await interaction.reply({
+            content: 'You must provide at least a title, a description, an image, or a thumbnail.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        if (image && image.contentType && !image.contentType.startsWith('image/')) {
+          await interaction.reply({
+            content: 'The image attachment must be an image.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        if (thumbnail && thumbnail.contentType && !thumbnail.contentType.startsWith('image/')) {
+          await interaction.reply({
+            content: 'The thumbnail attachment must be an image.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const parsedColor = parseHexColor(colorInput);
+        if (colorInput && parsedColor === null) {
+          await interaction.reply({
+            content: 'Invalid color. Use a hex value like `#57F287`.',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const embed = new EmbedBuilder()
+          .setColor(parsedColor ?? 0x2B2D31)
+          .setTimestamp();
+
+        if (title) embed.setTitle(title);
+        if (description) embed.setDescription(description);
+        if (image) embed.setImage(image.url);
+        if (thumbnail) embed.setThumbnail(thumbnail.url);
+
+        await channel.send({
+          embeds: [embed],
+        });
+
+        await interaction.reply({
+          content: `Embed sent in ${channel}.`,
+          ephemeral: true,
+        });
+
+        return;
+      }
     }
 
     /* ---------- Buttons ---------- */
@@ -1029,7 +1177,19 @@ client.on(Events.InteractionCreate, async interaction => {
 
       if (interaction.customId === 'payment_select_jwtg') {
         const paymentMethod = interaction.values[0];
-        await interaction.showModal(buildJwtgModal(paymentMethod));
+
+        await interaction.update({
+          content: 'Sei già livello 50?',
+          components: [buildJwtgLevel50Row(paymentMethod)],
+        });
+        return;
+      }
+
+      if (interaction.customId.startsWith('jwtg_level50_select_')) {
+        const paymentMethod = interaction.customId.replace('jwtg_level50_select_', '');
+        const level50 = interaction.values[0];
+
+        await interaction.showModal(buildJwtgModal(paymentMethod, level50));
         return;
       }
 
@@ -1113,11 +1273,14 @@ client.on(Events.InteractionCreate, async interaction => {
       }
 
       if (interaction.customId.startsWith('modal_jwtg_')) {
-        const paymentMethodValue = interaction.customId.replace('modal_jwtg_', '');
+        const parts = interaction.customId.split('_');
+        const paymentMethodValue = parts[2];
+        const level50Value = parts[3];
+
         const paymentMethod = formatPaymentMethod(paymentMethodValue);
+        const level50Text = level50Value === 'yes' ? 'Yes' : 'No';
 
         const buyItem = interaction.fields.getTextInputValue('buy_item');
-        const contactInfo = interaction.fields.getTextInputValue('contact_info');
 
         const embed = new EmbedBuilder()
           .setColor(0x57F287)
@@ -1128,7 +1291,7 @@ client.on(Events.InteractionCreate, async interaction => {
             { name: 'Game', value: 'Jurassic World The Game', inline: true },
             { name: 'What do you want to buy?', value: buyItem, inline: false },
             { name: 'Payment method', value: paymentMethod, inline: false },
-            { name: 'Username / contact info', value: contactInfo, inline: false }
+            { name: 'Already level 50?', value: level50Text, inline: false }
           )
           .setTimestamp();
 
